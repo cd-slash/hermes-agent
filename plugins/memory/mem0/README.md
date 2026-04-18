@@ -16,18 +16,30 @@ hermes memory setup    # select "mem0"
 Or manually:
 ```bash
 hermes config set memory.provider mem0
-echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
+echo "MEM0_API_KEY=your-key" >> "$HERMES_HOME/.env"
+```
+
+For proxy or self-hosted deployments, set the Mem0 host in `config.yaml`:
+
+```yaml
+memory:
+  provider: mem0
+  mem0:
+    host: https://mem0.example.com
 ```
 
 ## Config
 
-Config file: `$HERMES_HOME/mem0.json`
+Config file: `$HERMES_HOME/config.yaml`
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `host` | `""` | Optional Mem0 API host override for proxy deployments |
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `true` | Enable reranking for recall |
+
+`MEM0_API_KEY` stays in `$HERMES_HOME/.env`. If a legacy `$HERMES_HOME/mem0.json` exists with a `host` value, Hermes still honors that host as a read-only fallback override. If no host is configured, Mem0 uses the default cloud API host.
 
 ## Tools
 
