@@ -1,0 +1,78 @@
+name: Sync Upstream Main
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/NousResearch/hermes-agent.git
+          else
+            git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          fi
+
+      - name: Fetch and merge upstream/main
+        id: merge
+        run: |
+          git fetch upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "No upstream changes to merge."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git merge --no-edit upstream/main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        if: steps.merge.outputs.changed == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        if: steps.merge.outputs.changed == 'true'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+
+      - name: Run focused verification
+        if: steps.merge.outputs.changed == 'true'
+        run: scripts/run_tests.sh tests/plugins/memory/test_mem0_plugin.py tests/test_upstream_sync_workflow.py -q
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Push merged main
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:main
