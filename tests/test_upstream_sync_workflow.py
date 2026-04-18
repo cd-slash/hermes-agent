@@ -67,6 +67,8 @@ def test_upstream_sync_workflow_merges_verifies_and_pushes():
     install_step = steps["Install dependencies"]
     assert install_step["if"] == MERGE_CHANGED_IF
     assert "uv venv .venv --python 3.11" in install_step["run"]
+    assert "source .venv/bin/activate" in install_step["run"]
+    assert "python -m ensurepip --upgrade --default-pip" in install_step["run"]
     assert 'uv pip install -e ".[all,dev]"' in install_step["run"]
 
     git_identity_step = steps["Configure git author"]

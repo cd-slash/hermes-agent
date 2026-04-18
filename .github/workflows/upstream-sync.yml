@@ -63,6 +63,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
+          python -m ensurepip --upgrade --default-pip
           uv pip install -e ".[all,dev]"
 
       - name: Run focused verification
