@@ -1766,7 +1766,7 @@ class AIAgent:
                 logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
         if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
             try:
-                _detected = query_ollama_num_ctx(self.model, self.base_url)
+                _detected = query_ollama_num_ctx(self.model, self.base_url, api_key=self.api_key or "")
                 if _detected and _detected > 0:
                     self._ollama_num_ctx = _detected
             except Exception as exc:
@@ -4994,11 +4994,13 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
-        from agent.auxiliary_client import _OR_HEADERS
+        from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
 
         normalized = (base_url or "").lower()
         if "openrouter" in normalized:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "ai-gateway.vercel.sh" in normalized:
+            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif "api.githubcopilot.com" in normalized:
             from hermes_cli.models import copilot_default_headers
 

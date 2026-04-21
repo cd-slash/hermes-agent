@@ -55,6 +55,7 @@ AUTHOR_MAP = {
     "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
     "valdi.jorge@gmail.com": "jvcl",
+    "oussama.redcode@gmail.com": "mavrickdeveloper",
     "126368201+vilkasdev@users.noreply.github.com": "vilkasdev",
     "137614867+cutepawss@users.noreply.github.com": "cutepawss",
     "96793918+memosr@users.noreply.github.com": "memosr",
@@ -176,6 +177,7 @@ AUTHOR_MAP = {
     "simon@simonmarcus.org": "simon-marcus",
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
+    "e.silacandmr@gmail.com": "Es1la",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",
@@ -293,6 +295,7 @@ AUTHOR_MAP = {
     "ywt000818@gmail.com": "OwenYWT",
     "dhandhalyabhavik@gmail.com": "v1k22",
     "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
+    "tannerfokkens@Mac.attlocal.net": "tannerfokkens-maker",
     "lehaolin98@outlook.com": "LehaoLin",
     "yuewang1@microsoft.com": "imink",
     "1736355688@qq.com": "hedgeho9X",
@@ -316,6 +319,7 @@ AUTHOR_MAP = {
     "166376523+sjz-ks@users.noreply.github.com": "sjz-ks",
     "haileymarshall005@gmail.com": "haileymarshall",
     "aniruddhaadak80@users.noreply.github.com": "aniruddhaadak80",
+    "zheng.jerilyn@gmail.com": "jerilynzheng",
 }
 
 
