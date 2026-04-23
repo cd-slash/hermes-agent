@@ -109,8 +109,11 @@ AUTHOR_MAP = {
     "134848055+UNLINEARITY@users.noreply.github.com": "UNLINEARITY",
     "ben.burtenshaw@gmail.com": "burtenshaw",
     "roopaknijhara@gmail.com": "rnijhara",
+    "josephzcan@gmail.com": "j0sephz",
     # contributors (manual mapping from git names)
     "ahmedsherif95@gmail.com": "asheriif",
+    "dyxushuai@gmail.com": "dyxushuai",
+    "33860762+etcircle@users.noreply.github.com": "etcircle",
     "liujinkun@bytedance.com": "liujinkun2025",
     "dmayhem93@gmail.com": "dmahan93",
     "fr@tecompanytea.com": "ifrederico",
