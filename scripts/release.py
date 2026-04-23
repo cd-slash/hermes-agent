@@ -388,6 +388,11 @@ AUTHOR_MAP = {
     "216480837+isaachuangGMICLOUD@users.noreply.github.com": "isaachuangGMICLOUD",
     "nukuom976228@gmail.com": "hsy5571616",
     "11462216+Nan93@users.noreply.github.com": "Nan93",
+    "l973401489@126.com": "zhouxiaoya12",
+    "373119611@qq.com": "roytian1217",
+    "brett@brettbrewer.com": "minorgod",
+    "67779267+wenhao7@users.noreply.github.com": "wenhao7",
+    "git@yzx9.xyz": "yzx9",
 }
 
 
