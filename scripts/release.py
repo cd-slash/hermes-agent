@@ -44,6 +44,9 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "343873859@qq.com": "DrStrangerUJN",
+    "jefferson@heimdallstrategy.com": "Mind-Dragon",
+    "130918800+devorun@users.noreply.github.com": "devorun",
+    "maks.mir@yahoo.com": "say8hi",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
@@ -165,6 +168,7 @@ AUTHOR_MAP = {
     "seanalt555@gmail.com": "Salt-555",
     "satelerd@gmail.com": "satelerd",
     "numman.ali@gmail.com": "nummanali",
+    "rohithsaimidigudla@gmail.com": "whitehatjr1001",
     "0xNyk@users.noreply.github.com": "0xNyk",
     "0xnykcd@googlemail.com": "0xNyk",
     "buraysandro9@gmail.com": "buray",
