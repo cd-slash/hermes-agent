@@ -141,6 +141,7 @@ AUTHOR_MAP = {
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
     "akhater@gmail.com": "akhater",
+    "Cos_Admin@PTG-COS.lodluvup4uaudnm3ycd14giyug.xx.internal.cloudapp.net": "akhater",
     "239876380+handsdiff@users.noreply.github.com": "handsdiff",
     "hesapacicam112@gmail.com": "etherman-os",
     "mark.ramsell@rivermounts.com": "mark-ramsell",
@@ -365,6 +366,13 @@ AUTHOR_MAP = {
     "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
     "22549957+li0near@users.noreply.github.com": "li0near",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
+    "haimu0x0@proton.me": "haimu0x",
+    "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
+    "projectadmin@wit.id": "projectadmin-dev",
+    "mrigankamondal10@gmail.com": "Dev-Mriganka",
+    "132275809+shushuzn@users.noreply.github.com": "shushuzn",
+    "ibrahimozsarac@gmail.com": "iborazzi",
+    "130149563+A-afflatus@users.noreply.github.com": "A-afflatus",
 }
 
 
