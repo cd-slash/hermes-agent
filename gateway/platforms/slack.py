@@ -55,6 +55,7 @@ class _ThreadContextCache:
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
+    parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
 def check_slack_requirements() -> bool:
@@ -1133,6 +1134,8 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
+            elif self._slack_strict_mention() and not is_mentioned:
+                return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -1155,8 +1158,11 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so all future messages auto-trigger the bot
-            if event_thread_ts:
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skipped in strict mode: strict_mention=true bots must be
+            # re-mentioned every turn, so remembering the thread would
+            # defeat the feature (and re-enable agent-to-agent ack loops).
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
@@ -1189,6 +1195,29 @@ class SlackAdapter(BasePlatformAdapter):
         media_types = []
         files = event.get("files", [])
         for f in files:
+            # Slack Connect channels return stub file objects with
+            # file_access="check_file_info" and no URL fields. We must
+            # call files.info to retrieve the full object (including url_private_download)
+            # before we can download it.
+            # https://docs.slack.dev/reference/objects/file-object/#slack_connect_files
+            if f.get("file_access") == "check_file_info":
+                file_id = f.get("id")
+                if not file_id:
+                    continue
+                try:
+                    info_resp = await self._get_client(channel_id).files_info(file=file_id)
+                    if info_resp.get("ok"):
+                        f = info_resp["file"]
+                    else:
+                        logger.warning(
+                            "[Slack] files.info failed for %s: %s",
+                            file_id, info_resp.get("error"),
+                        )
+                        continue
+                except Exception as e:
+                    logger.warning("[Slack] files.info error for %s: %s", file_id, e, exc_info=True)
+                    continue
+
             mimetype = f.get("mimetype", "unknown")
             url = f.get("url_private_download") or f.get("url_private", "")
             if mimetype.startswith("image/") and url:
@@ -1286,6 +1315,22 @@ class SlackAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # Extract reply context if this message is a thread reply.
+        # Mirrors the Telegram/Discord implementations so that gateway.run
+        # can inject a `[Replying to: "..."]` prefix when the parent is not
+        # already in the session history. Uses the thread-context cache when
+        # available to avoid redundant conversations.replies calls.
+        reply_to_text = None
+        if thread_ts and thread_ts != ts:
+            try:
+                reply_to_text = await self._fetch_thread_parent_text(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                ) or None
+            except Exception:  # pragma: no cover - defensive
+                reply_to_text = None
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -1296,6 +1341,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
+            reply_to_text=reply_to_text,
         )
 
         # Only react when bot is directly addressed (DM or @mention).
@@ -1503,7 +1549,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns a formatted string with prior thread history, or empty string
         on failure or if the thread has no prior messages.
         """
-        cache_key = f"{channel_id}:{thread_ts}"
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
@@ -1550,14 +1596,37 @@ class SlackAdapter(BasePlatformAdapter):
 
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             context_parts = []
+            parent_text = ""
             for msg in messages:
                 msg_ts = msg.get("ts", "")
                 # Exclude the current triggering message — it will be delivered
                 # as the user message itself, so including it here would duplicate it.
                 if msg_ts == current_ts:
                     continue
-                # Exclude our own bot messages to avoid circular context.
-                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+
+                is_parent = msg_ts == thread_ts
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                msg_user = msg.get("user", "")
+
+                # Identify "our own" bot for this workspace (multi-workspace safe).
+                msg_team = msg.get("team") or team_id
+                self_bot_uid = (
+                    self._team_bot_user_ids.get(msg_team)
+                    if msg_team
+                    else None
+                ) or self._bot_user_id
+
+                # Exclude only our own prior bot replies (circular context).
+                # Keep:
+                #   - the thread parent even if it was posted by a bot
+                #     (e.g. a cron job summary we are now replying to);
+                #   - other bots' child messages (useful third-party context).
+                if (
+                    is_bot
+                    and not is_parent
+                    and self_bot_uid
+                    and msg_user == self_bot_uid
+                ):
                     continue
 
                 msg_text = msg.get("text", "").strip()
@@ -1568,11 +1637,15 @@ class SlackAdapter(BasePlatformAdapter):
                 if bot_uid:
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
-                msg_user = msg.get("user", "unknown")
-                is_parent = msg_ts == thread_ts
                 prefix = "[thread parent] " if is_parent else ""
-                name = await self._resolve_user_name(msg_user, chat_id=channel_id)
+                display_user = msg_user or "unknown"
+                # Prefer the bot's own name when the message is a bot post.
+                if is_bot and not display_user:
+                    display_user = msg.get("username") or "bot"
+                name = await self._resolve_user_name(display_user, chat_id=channel_id)
                 context_parts.append(f"{prefix}{name}: {msg_text}")
+                if is_parent:
+                    parent_text = msg_text
 
             content = ""
             if context_parts:
@@ -1586,11 +1659,53 @@ class SlackAdapter(BasePlatformAdapter):
                 content=content,
                 fetched_at=now,
                 message_count=len(context_parts),
+                parent_text=parent_text,
             )
             return content
 
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
+    async def _fetch_thread_parent_text(
+        self, channel_id: str, thread_ts: str, team_id: str = "",
+    ) -> str:
+        """Return the raw text of the thread parent message (for reply_to_text).
+
+        Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
+        hitting ``conversations.replies`` twice. Falls back to a cheap single-
+        message fetch (``limit=1, inclusive=True``) when the cache is cold.
+
+        Returns empty string on any failure — callers should treat an empty
+        return as "no parent context to inject".
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_text
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=1,
+                inclusive=True,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return ""
+            parent = messages[0]
+            if parent.get("ts", "") != thread_ts:
+                return ""
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            text = (parent.get("text") or "").strip()
+            if bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+            return text
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
     async def _handle_slash_command(self, command: dict) -> None:
@@ -1782,6 +1897,18 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_strict_mention(self) -> bool:
+        """When true, channel threads require an explicit @-mention on every
+        message. Disables all auto-triggers (mentioned-thread memory,
+        bot-message follow-up, session-presence). Defaults to False.
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
