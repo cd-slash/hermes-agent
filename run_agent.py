@@ -74,6 +74,12 @@ from model_tools import (
     check_toolset_requirements,
 )
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
+from tools.terminal_tool import (
+    set_approval_callback as _set_approval_callback,
+    set_sudo_password_callback as _set_sudo_password_callback,
+    _get_approval_callback,
+    _get_sudo_password_callback,
+)
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
@@ -3241,6 +3247,21 @@ class AIAgent:
 
         def _run_review():
             import contextlib
+            # Install a non-interactive approval callback on this worker
+            # thread so any dangerous-command guard the review agent trips
+            # resolves to "deny" instead of falling back to input() -- which
+            # deadlocks against the parent's prompt_toolkit TUI (#15216).
+            # Same pattern as _subagent_auto_deny in tools/delegate_tool.py.
+            def _bg_review_auto_deny(command, description, **kwargs):
+                logger.warning(
+                    "Background review auto-denied dangerous command: %s (%s)",
+                    command, description,
+                )
+                return "deny"
+            try:
+                _set_approval_callback(_bg_review_auto_deny)
+            except Exception:
+                pass
             review_agent = None
             try:
                 with open(os.devnull, "w") as _devnull, \
@@ -3266,6 +3287,7 @@ class AIAgent:
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
+                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -3322,6 +3344,12 @@ class AIAgent:
                         review_agent.close()
                     except Exception:
                         pass
+                # Clear the approval callback on this bg-review thread so a
+                # recycled thread-id doesn't inherit a stale reference.
+                try:
+                    _set_approval_callback(None)
+                except Exception:
+                    pass
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
@@ -8648,6 +8676,14 @@ class AIAgent:
         self._current_tool = tool_names_str
         self._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
+        # Capture CLI callbacks from the agent thread so worker threads can
+        # register them locally.  Without this, _get_approval_callback() in
+        # terminal_tool returns None in ThreadPoolExecutor workers, causing
+        # the dangerous-command prompt to fall back to input() — which
+        # deadlocks against prompt_toolkit's raw terminal mode (#13617).
+        _parent_approval_cb = _get_approval_callback()
+        _parent_sudo_cb = _get_sudo_password_callback()
+
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
             # Register this worker tid so the agent can fan out an interrupt
@@ -8674,6 +8710,18 @@ class AIAgent:
                 set_activity_callback(self._touch_activity)
             except Exception:
                 pass
+            # Propagate approval/sudo callbacks to this worker thread.
+            # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
+            if _parent_approval_cb is not None:
+                try:
+                    _set_approval_callback(_parent_approval_cb)
+                except Exception:
+                    pass
+            if _parent_sudo_cb is not None:
+                try:
+                    _set_sudo_password_callback(_parent_sudo_cb)
+                except Exception:
+                    pass
             start = time.time()
             try:
                 result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id, messages=messages)
@@ -8694,6 +8742,13 @@ class AIAgent:
                 self._tool_worker_threads.discard(_worker_tid)
             try:
                 _set_interrupt(False, _worker_tid)
+            except Exception:
+                pass
+            # Clear thread-local callbacks so a recycled worker thread
+            # doesn't hold stale references to a disposed CLI instance.
+            try:
+                _set_approval_callback(None)
+                _set_sudo_password_callback(None)
             except Exception:
                 pass
 

@@ -53,6 +53,7 @@ AUTHOR_MAP = {
     "maks.mir@yahoo.com": "say8hi",
     "web3blind@users.noreply.github.com": "web3blind",
     "julia@alexland.us": "alexg0bot",
+    "christian@scheid.tech": "scheidti",
     "1060770+benjaminsehl@users.noreply.github.com": "benjaminsehl",
     "nerijusn76@gmail.com": "Nerijusas",
     "itonov@proton.me": "Ito-69",
@@ -553,6 +554,7 @@ AUTHOR_MAP = {
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
     "ash@users.noreply.github.com": "ash",
+    "andrewho.sf@gmail.com": "andrewhosf",
 }
 
 
