@@ -44,6 +44,7 @@ AUTHOR_MAP = {
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "revar@users.noreply.github.com": "revaraver",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",
@@ -58,6 +59,7 @@ AUTHOR_MAP = {
     "yes999zc@163.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
+    "beliefanx@gmail.com": "BeliefanX",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "steve.westerhouse@origami-analytics.com": "westers",
     "130918800+devorun@users.noreply.github.com": "devorun",
@@ -582,6 +584,7 @@ AUTHOR_MAP = {
     "hekaru.agent@gmail.com": "hekaru-agent",
     "jas9000@gmail.com": "twozle",
     "r.filgueiras@apheris.com": "rfilgueiras",
+    "leihaibo1992@gmail.com": "Leihb",
 }
 
 

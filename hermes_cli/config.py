@@ -411,6 +411,20 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Freshness window for the gateway auto-continue note (seconds).
+        # After a gateway crash/restart/SIGTERM mid-run, the next user
+        # message gets a "[System note: your previous turn was
+        # interrupted — process the unfinished tool result(s) first]"
+        # prepended so the model picks up where it left off.  That's the
+        # right behaviour while the interruption is fresh, but stale
+        # markers (transcript last touched hours or days ago) can revive
+        # an unrelated old task when the user's next message starts new
+        # work.  This window is the max age of the last persisted
+        # transcript row for which we still inject the continue note.
+        # Default 3600s comfortably covers a long turn (gateway_timeout
+        # default is 1800s) plus runtime slack.  Set to 0 to disable the
+        # gate and restore pre-fix behaviour (always inject).
+        "gateway_auto_continue_freshness": 3600,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -568,7 +582,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-
+        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
