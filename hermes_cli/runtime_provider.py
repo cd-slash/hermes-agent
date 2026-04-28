@@ -260,11 +260,16 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        elif provider in ("opencode-zen", "opencode-go"):
+        if provider in ("opencode-zen", "opencode-go"):
+            # Re-derive api_mode from the effective model rather than the
+            # persisted api_mode: the opencode providers serve both
+            # anthropic_messages and chat_completions models, so the previous
+            # session's mode must not leak across /model switches.
+            # Refs #16878.
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, effective_model)
+        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            api_mode = configured_mode
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
@@ -464,6 +469,30 @@ def _resolve_named_custom_runtime(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    # Bare `provider="custom"` with an explicit base_url (e.g. propagated
+    # from a `model_aliases:` direct-alias resolution) — build a runtime
+    # directly so the alias's base_url actually takes effect.
+    requested_norm = (requested_provider or "").strip().lower()
+    if requested_norm == "custom" and explicit_base_url:
+        base_url = explicit_base_url.strip().rstrip("/")
+        api_key_candidates = [
+            (explicit_api_key or "").strip(),
+            os.getenv("OPENAI_API_KEY", "").strip(),
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+        ]
+        api_key = next(
+            (c for c in api_key_candidates if has_usable_secret(c)),
+            "",
+        ) or "no-key-required"
+        return {
+            "provider": "custom",
+            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "direct-alias",
+            "requested_provider": requested_provider,
+        }
+
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
@@ -1212,15 +1241,20 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
-            elif provider in ("opencode-zen", "opencode-go"):
+            if provider in ("opencode-zen", "opencode-go"):
+                # opencode-zen/go must always re-derive api_mode from the
+                # target model (not the stale persisted api_mode), because
+                # the same provider serves both anthropic_messages
+                # (e.g. minimax-m2.7) and chat_completions (e.g.
+                # deepseek-v4-flash) and switching models via /model would
+                # otherwise carry the previous mode forward, stripping /v1
+                # from base_url for chat_completions models and 404'ing.
+                # Refs #16878.
                 from hermes_cli.models import opencode_model_api_mode
-                # Prefer the target_model from the caller (explicit mid-session
-                # switch) over the stale model.default; see _resolve_runtime_from_pool_entry
-                # for the same rationale.
                 _effective = target_model or model_cfg.get("default", "")
                 api_mode = opencode_model_api_mode(provider, _effective)
+            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                api_mode = configured_mode
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
