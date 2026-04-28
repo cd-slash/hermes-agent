@@ -94,6 +94,10 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "tencent": "tencent-tokenhub",
+    "tokenhub": "tencent-tokenhub",
+    "tencent-cloud": "tencent-tokenhub",
+    "tencentmaas": "tencent-tokenhub",
 }
 
 
@@ -166,6 +170,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
+    "tencent-tokenhub": "hy3-preview",
 }
 
 # Vision-specific model overrides for direct providers.
@@ -634,9 +639,7 @@ class _AnthropicCompletionsAdapter:
 
         response = self._client.messages.create(**anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
-        _nr = _transport.normalize_response(
-            response, strip_tool_prefix=self._is_oauth
-        )
+        _nr = _transport.normalize_response(response)
 
         # ToolCall already duck-types as OpenAI shape (.type, .function.name,
         # .function.arguments) via properties, so no wrapping needed.
