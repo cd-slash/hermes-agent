@@ -915,6 +915,35 @@ DEFAULT_CONFIG = {
         "guard_agent_created": False,
     },
 
+    # Curator — background skill maintenance.
+    #
+    # Periodically reviews AGENT-CREATED skills (never bundled or
+    # hub-installed) and keeps the collection tidy: marks long-unused skills
+    # as stale, archives genuinely obsolete ones (archive only, never
+    # deletes), and spawns a forked aux-model agent to consolidate overlaps
+    # and patch drift. Runs inactivity-triggered from session start — no
+    # cron daemon.
+    #
+    # See `hermes curator status` for the last run summary.
+    "curator": {
+        "enabled": True,
+        # How long to wait between curator runs (hours).  Default: 7 days.
+        "interval_hours": 24 * 7,
+        # Only run when the agent has been idle at least this long (hours).
+        "min_idle_hours": 2,
+        # Mark a skill as "stale" after this many days without use.
+        "stale_after_days": 30,
+        # Archive a skill (move to skills/.archive/) after this many days
+        # without use. Archived skills are recoverable — no auto-deletion.
+        "archive_after_days": 90,
+        # Optional per-task override for the curator's aux model. Leave null
+        # to use Hermes' main auxiliary client resolution.
+        "auxiliary": {
+            "provider": None,
+            "model": None,
+        },
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -3710,18 +3739,27 @@ def _sanitize_env_lines(lines: list) -> list:
 
         # Detect concatenated KEY=VALUE pairs on one line.
         # Search for known KEY= patterns at any position in the line.
-        split_positions = []
+        # We collect full needle ranges so we can drop matches that are
+        # fully contained within a longer overlapping needle. Without this,
+        # suffix collisions corrupt the file: e.g. LM_API_KEY= inside
+        # GLM_API_KEY= would otherwise split the line into "G\nLM_API_KEY=...".
+        match_ranges: list[tuple[int, int]] = []
         for key_name in known_keys:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                split_positions.append(idx)
+                match_ranges.append((idx, idx + len(needle)))
                 idx = stripped.find(needle, idx + len(needle))
 
+        split_positions = sorted({
+            s for s, e in match_ranges
+            if not any(
+                s2 <= s and e2 >= e and (s2, e2) != (s, e)
+                for s2, e2 in match_ranges
+            )
+        })
+
         if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
-            split_positions = sorted(set(split_positions))
             for i, pos in enumerate(split_positions):
                 end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
                 part = stripped[pos:end].strip()
