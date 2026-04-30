@@ -2535,10 +2535,18 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    # Make _build block until we release it — simulates slow agent init
+    # Make _build block until we release it — simulates slow agent init.
+    # Also signal when _build actually reaches _make_agent so the test
+    # can close the session at the right moment: session.create now
+    # defers _start_agent_build behind a 50ms timer (see the
+    # `_deferred_build` path in @method("session.create")), so closing
+    # before the build thread has even started would skip the orphan
+    # detection entirely and the test would race a non-event.
+    build_started = threading.Event()
     release_build = threading.Event()
 
-    def _slow_make_agent(sid, key):
+    def _slow_make_agent(sid, key, session_id=None):
+        build_started.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
 
@@ -2576,6 +2584,12 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+
+    # Wait until the (deferred) build thread has actually entered
+    # _make_agent — otherwise session.close pops _sessions[sid] before
+    # _build ever runs, _start_agent_build never calls _build, and we
+    # never exercise the orphan-cleanup path.
+    assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
 
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the
@@ -2756,6 +2770,155 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
 
     assert "error" in resp
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+
+
+# --------------------------------------------------------------------------
+# session.delete — TUI resume picker `d` key
+# --------------------------------------------------------------------------
+
+
+def test_session_delete_requires_session_id(monkeypatch):
+    """Empty / missing session_id is a 4006 client error (no DB call)."""
+    called: list[tuple] = []
+
+    class _DB:
+        def delete_session(self, *a, **kw):
+            called.append((a, kw))
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request({"id": "1", "method": "session.delete", "params": {}})
+    assert "error" in resp
+    assert resp["error"]["code"] == 4006
+    assert called == []
+
+
+def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_db_error", "locked")
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "abc"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "state.db unavailable" in resp["error"]["message"]
+
+
+def test_session_delete_refuses_active_session(monkeypatch):
+    """Cannot delete a session currently bound to a live TUI session."""
+    called: list[str] = []
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            called.append(sid)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setitem(server._sessions, "live", {"session_key": "key-live"})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.delete",
+                "params": {"session_id": "key-live"},
+            }
+        )
+    finally:
+        server._sessions.pop("live", None)
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4023
+    assert "active session" in resp["error"]["message"]
+    assert called == [], "delete_session must not be called for active sessions"
+
+
+def test_session_delete_fails_closed_when_active_snapshot_raises(monkeypatch):
+    """Concurrent ``_sessions`` mutation from another RPC thread can raise
+    ``RuntimeError: dictionary changed size during iteration``.  When the
+    handler can't enumerate active sessions safely it must refuse the
+    delete (fail closed) rather than fall through and allow it."""
+
+    class _DB:
+        def delete_session(self, *a, **kw):
+            raise AssertionError("delete must not run when active snapshot fails")
+
+    class _ExplodingDict:
+        def values(self):
+            raise RuntimeError("dictionary changed size during iteration")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_sessions", _ExplodingDict())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "enumerate active sessions" in resp["error"]["message"]
+
+
+def test_session_delete_returns_4007_when_missing(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            return False
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "ghost"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4007
+
+
+def test_session_delete_propagates_db_exception(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "disk full" in resp["error"]["message"]
+
+
+def test_session_delete_success_returns_deleted_id(monkeypatch):
+    """Happy path — DB delete succeeds, response carries the deleted id
+    and the on-disk sessions dir is forwarded so transcript files get
+    cleaned up alongside the row."""
+    captured: dict = {}
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            captured["sid"] = sid
+            captured["sessions_dir"] = sessions_dir
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "old-1"}}
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"] == {"deleted": "old-1"}
+    assert captured["sid"] == "old-1"
+    # sessions_dir must be forwarded so transcript files get cleaned up
+    # too — not just the SQLite row.  The autouse _isolate_hermes_home
+    # fixture pins HERMES_HOME to a temp dir; the handler should append
+    # /sessions to it.
+    assert captured["sessions_dir"] is not None
+    assert str(captured["sessions_dir"]).endswith("sessions")
 
 
 # --------------------------------------------------------------------------
