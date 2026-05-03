@@ -2755,7 +2755,7 @@ class GatewayRunner:
             try:
                 suspended = self.session_store.suspend_recently_active()
                 if suspended:
-                    logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+                    logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
             except Exception as e:
                 logger.warning("Session suspension on startup failed: %s", e)
 
@@ -3982,7 +3982,9 @@ class GatewayRunner:
             if not check_discord_requirements():
                 logger.warning("Discord: discord.py not installed")
                 return None
-            return DiscordAdapter(config)
+            adapter = DiscordAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform admin alerts on unauthorized slash
+            return adapter
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
