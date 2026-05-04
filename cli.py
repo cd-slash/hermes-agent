@@ -10484,20 +10484,14 @@ class HermesCLI:
                     self._should_exit = True
                     event.app.exit()
 
-        @kb.add('c-S-c')  # Ctrl+Shift+C
-        def handle_ctrl_shift_c(event):
-            """Copy text to clipboard (terminal-native).
-
-            This is a no-op at the application level. Terminal emulators
-            handle the actual copy operation when Ctrl+Shift+C is pressed.
-            This binding prevents Hermes from intercepting the keystroke
-            as an interrupt signal.
-
-            On macOS the standard copy shortcut is Cmd+C (no Hermes binding
-            needed). On Linux/Windows Ctrl+Shift+C is the conventional
-            terminal copy shortcut.
-            """
-            return  # No-op — let the terminal perform native copy
+        # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
+        # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
+        # the keystroke reaches the application's stdin — prompt_toolkit never
+        # sees it, and prompt_toolkit's key spec parser doesn't even recognise
+        # 'c-S-c' anyway (the Shift modifier is meaningless on control-sequence
+        # keys). #19884 added a handler for this; #19895 patched the resulting
+        # startup crash with try/except. Both were based on a misreading of how
+        # terminal key events propagate. Deleting the dead handler outright.
 
         @kb.add('c-q')  # Ctrl+Q
         def handle_ctrl_q(event):
