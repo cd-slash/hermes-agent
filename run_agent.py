@@ -3611,7 +3611,7 @@ class AIAgent:
                     _parent_runtime = self._current_main_runtime()
                     review_agent = AIAgent(
                         model=self.model,
-                        max_iterations=8,
+                        max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
@@ -3629,6 +3629,14 @@ class AIAgent:
                     review_agent._user_profile_enabled = self._user_profile_enabled
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
+                    # Suppress all status/warning emits from the fork so the
+                    # user only sees the final successful-action summary.
+                    # Without this, mid-review "Iteration budget exhausted",
+                    # rate-limit retries, compression warnings, and other
+                    # lifecycle messages bubble up through _emit_status ->
+                    # _vprint and leak past the stdout redirect (they go via
+                    # _print_fn/status_callback, which bypass sys.stdout).
+                    review_agent.suppress_status_output = True
 
                     review_agent.run_conversation(
                         user_message=prompt,
@@ -5056,6 +5064,23 @@ class AIAgent:
             return tc.get("call_id", "") or tc.get("id", "") or ""
         return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
 
+    @staticmethod
+    def _get_tool_call_name_static(tc) -> str:
+        """Extract function name from a tool_call entry (dict or object).
+
+        Gemini's OpenAI-compatibility endpoint requires every `role: tool`
+        message to carry the matching function name. OpenAI/Anthropic/ollama
+        tolerate its absence, so the field is best-effort: callers fall back
+        to "" and the message still works elsewhere.
+        """
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                return fn.get("name", "") or ""
+            return ""
+        fn = getattr(tc, "function", None)
+        return getattr(fn, "name", "") or ""
+
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
     @staticmethod
@@ -5118,6 +5143,7 @@ class AIAgent:
                         if cid in missing_results:
                             patched.append({
                                 "role": "tool",
+                                "name": AIAgent._get_tool_call_name_static(tc),
                                 "content": "[Result unavailable — see context summary above]",
                                 "tool_call_id": cid,
                             })
@@ -9022,6 +9048,7 @@ class AIAgent:
                             insert_at,
                             {
                                 "role": "tool",
+                                "name": function_name if function_name != "?" else "",
                                 "tool_call_id": tool_call_id,
                                 "content": marker,
                             },
@@ -9426,6 +9453,7 @@ class AIAgent:
             for tc in tool_calls:
                 messages.append({
                     "role": "tool",
+                    "name": tc.function.name,
                     "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                     "tool_call_id": tc.id,
                 })
@@ -9767,6 +9795,7 @@ class AIAgent:
 
             tool_msg = {
                 "role": "tool",
+                "name": name,
                 "content": function_result,
                 "tool_call_id": tc.id,
             }
@@ -9804,6 +9833,7 @@ class AIAgent:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
+                        "name": skipped_name,
                         "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
                     }
@@ -10154,6 +10184,7 @@ class AIAgent:
 
             tool_msg = {
                 "role": "tool",
+                "name": function_name,
                 "content": function_result,
                 "tool_call_id": tool_call.id
             }
@@ -10180,6 +10211,7 @@ class AIAgent:
                     skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
+                        "name": skipped_name,
                         "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                         "tool_call_id": skipped_tc.id
                     }
@@ -13102,6 +13134,7 @@ class AIAgent:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({
                                 "role": "tool",
+                                "name": tc.function.name,
                                 "tool_call_id": tc.id,
                                 "content": content,
                             })
@@ -13193,6 +13226,7 @@ class AIAgent:
                                     tool_result = "Skipped: other tool call in this response had invalid JSON."
                                 messages.append({
                                     "role": "tool",
+                                    "name": tc.function.name,
                                     "tool_call_id": tc.id,
                                     "content": tool_result,
                                 })
@@ -13709,6 +13743,7 @@ class AIAgent:
                             if tc["id"] not in answered_ids:
                                 err_msg = {
                                     "role": "tool",
+                                    "name": AIAgent._get_tool_call_name_static(tc),
                                     "tool_call_id": tc["id"],
                                     "content": f"Error executing tool: {error_msg}",
                                 }
