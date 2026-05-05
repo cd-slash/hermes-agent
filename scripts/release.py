@@ -87,6 +87,13 @@ AUTHOR_MAP = {
     "lazycat.manatee@gmail.com": "manateelazycat",
     "bzarnitz13@gmail.com": "Beandon13",
     "tony@tonysimons.dev": "asimons81",
+    "jetha@google.com": "jethac",
+    "jani@0xhoneyjar.xyz": "deep-name",
+    "xiangyong@zspace.cn": "CES4751",
+    "harish.kukreja@gmail.com": "counterposition",
+    "35294173+Fearvox@users.noreply.github.com": "Fearvox",
+    "hypnus.yuan@gmail.com": "Hypnus-Yuan",
+    "15558128926@qq.com": "xsfX20",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",
