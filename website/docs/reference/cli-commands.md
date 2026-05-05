@@ -431,6 +431,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+| `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 
 Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
@@ -708,6 +709,7 @@ Subcommands:
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
 | `uninstall` | Remove a hub-installed skill. |
+| `reset` | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
 | `publish` | Publish a skill to a registry. |
 | `snapshot` | Export/import skill configurations. |
 | `tap` | Manage custom skill sources. |
@@ -729,6 +731,8 @@ hermes skills install https://example.com/SKILL.md --name my-skill        # Over
 hermes skills check
 hermes skills update
 hermes skills config
+hermes skills reset google-workspace
+hermes skills reset google-workspace --restore --yes
 ```
 
 Notes:
@@ -1093,7 +1097,7 @@ Typical session:
 2. Use `↑`/`↓` to reorder fallbacks (first-in-list is tried first).
 3. Press `d` to remove one.
 
-All changes persist to `fallback_providers:` under `model:` in `config.yaml`. Interacts with [Credential Pools](/docs/user-guide/features/credential-pools): pools rotate keys *within* a provider, fallbacks switch to a *different* provider entirely.
+All changes persist to the top-level `fallback_providers:` list in `config.yaml`. Interacts with [Credential Pools](/docs/user-guide/features/credential-pools): pools rotate keys *within* a provider, fallbacks switch to a *different* provider entirely.
 
 See [Fallback Providers](/docs/user-guide/features/fallback-providers) for behavior details and interaction with `fallback_model` (legacy single-fallback key).
 
