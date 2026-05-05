@@ -63,6 +63,7 @@ AUTHOR_MAP = {
     "chengoak@users.noreply.github.com": "chengoak",
     "mrhanoi@outlook.com": "qxxaa",
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
+    "lazycat.manatee@gmail.com": "manateelazycat",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",
@@ -268,6 +269,7 @@ AUTHOR_MAP = {
     "hakanerten02@hotmail.com": "teyrebaz33",
     "linux2010@users.noreply.github.com": "Linux2010",
     "elmatadorgh@users.noreply.github.com": "elmatadorgh",
+    "coktinbaran5@gmail.com": "elmatadorgh",
     "alexazzjjtt@163.com": "alexzhu0",
     "1180176+Swift42@users.noreply.github.com": "Swift42",
     "ruzzgarcn@gmail.com": "Ruzzgar",
