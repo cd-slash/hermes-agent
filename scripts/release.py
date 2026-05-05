@@ -55,6 +55,13 @@ AUTHOR_MAP = {
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
     "657290301@qq.com": "IMHaoyan",
     "revar@users.noreply.github.com": "revaraver",
+    "29756950+revaraver@users.noreply.github.com": "revaraver",
+    "nexus@eptic.me": "TheEpTic",
+    "74554762+wmagev@users.noreply.github.com": "wmagev",
+    "ashermorse@icloud.com": "ashermorse",
+    "happy5318@users.noreply.github.com": "happy5318",
+    "chengoak@users.noreply.github.com": "chengoak",
+    "mrhanoi@outlook.com": "qxxaa",
     "emelyanenko.kirill@gmail.com": "EmelyanenkoK",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",
@@ -81,6 +88,7 @@ AUTHOR_MAP = {
     # Curator fixes (Apr 30 2026)
     "yuxiangl490@gmail.com": "y0shua1ee",
     "manmit0x@gmail.com": "0xDevNinja",
+    "stevekelly622@gmail.com": "steezkelly",
     "aamirjawaid@microsoft.com": "heyitsaamir",
     "johnnncenaaa77@gmail.com": "johnncenae",
     "thomasjhon6666@gmail.com": "ThomassJonax",

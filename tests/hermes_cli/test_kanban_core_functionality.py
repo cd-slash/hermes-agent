@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -181,6 +183,20 @@ def test_pid_alive_helper():
     assert not kb._pid_alive(None)
     # A clearly-dead pid (very large, extremely unlikely to exist).
     assert not kb._pid_alive(2 ** 30)
+
+
+def test_pid_alive_detects_darwin_zombie(monkeypatch):
+    monkeypatch.setattr(kb.sys, "platform", "darwin")
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: None)
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-o", "stat=", "-p", "123"]
+        assert kwargs["stdout"] is subprocess.PIPE
+        return SimpleNamespace(returncode=0, stdout="Z+\n")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._pid_alive(123) is False
 
 
 def test_detect_crashed_workers_reclaims(kanban_home):
@@ -1371,6 +1387,48 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
         conn.close()
     assert r.summary == "done it"
     assert r.metadata == {"files": 3}
+
+
+def test_cli_edit_backfills_result_on_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.complete_task(conn, tid)
+    finally:
+        conn.close()
+
+    meta = '{"source": "dashboard-recovery"}'
+    out = run_slash(
+        "edit " + tid
+        + " --result \"DECIDED: done\""
+        + " --summary \"DECIDED: done\""
+        + " --metadata '" + meta + "'"
+    )
+
+    assert "Edited" in out
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert task.result == "DECIDED: done"
+    assert run.summary == "DECIDED: done"
+    assert run.metadata == {"source": "dashboard-recovery"}
+    assert events[-1].kind == "edited"
+
+
+def test_cli_edit_rejects_non_done_task(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+    finally:
+        conn.close()
+
+    out = run_slash(f"edit {tid} --result nope")
+
+    assert "not done" in out
 
 
 def test_cli_complete_bad_metadata_exits_nonzero(kanban_home):

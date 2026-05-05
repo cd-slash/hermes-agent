@@ -76,6 +76,7 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -190,12 +191,12 @@ def get_current_board() -> str:
     1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
     2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
-       switch``).
+       switch``), but only when that board still exists.
     3. ``DEFAULT_BOARD`` (``"default"``).
 
-    A malformed slug at any step falls through to the next layer with a
-    best-effort warning — the dispatcher must never crash because a user
-    hand-edited a file.
+    A malformed or stale slug at any step falls through to the next layer
+    with a best-effort warning — the dispatcher must never crash because a
+    user hand-edited a file or removed a board directory.
     """
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
@@ -212,7 +213,7 @@ def get_current_board() -> str:
             if val:
                 try:
                     normed = _normalize_board_slug(val)
-                    if normed:
+                    if normed and board_exists(normed):
                         return normed
                 except ValueError:
                     pass
@@ -1916,6 +1917,73 @@ def complete_task(
     return True
 
 
+def edit_completed_task_result(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: str,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Backfill the user-visible result for an already completed task."""
+    handoff_summary = summary if summary is not None else result
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "done":
+            return False
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
+        run = conn.execute(
+            """
+            SELECT id FROM task_runs
+             WHERE task_id = ?
+               AND outcome = 'completed'
+             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        run_id = int(run["id"]) if run else None
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=handoff_summary,
+                metadata=metadata,
+            )
+        else:
+            conn.execute(
+                "UPDATE task_runs SET summary = ? WHERE id = ?",
+                (handoff_summary, run_id),
+            )
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), run_id),
+                )
+        ev_summary = (
+            handoff_summary.strip().splitlines()[0][:400]
+            if handoff_summary else ""
+        )
+        _append_event(
+            conn, task_id, "edited",
+            {
+                "fields": (
+                    ["result", "summary"]
+                    + (["metadata"] if metadata is not None else [])
+                ),
+                "result_len": len(result) if result else 0,
+                "summary": ev_summary or None,
+            },
+            run_id=run_id,
+        )
+    return True
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2141,16 +2209,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
     Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
     on Windows. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling (Linux):** ``os.kill(pid, 0)`` succeeds against
+    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
     zombie processes (post-exit, pre-reap) because the process table
     entry still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
     the window between exit and reap, we'd otherwise see stale "alive"
-    signals. On Linux we additionally peek at ``/proc/<pid>/status``
-    and treat ``State: Z`` as dead. On other POSIX or on Windows the
-    zombie check is a no-op.
+    signals. On Linux we peek at ``/proc/<pid>/status`` and treat
+    ``State: Z`` as dead. On macOS we ask ``ps`` for the BSD ``stat``
+    field and treat values containing ``Z`` as dead.
     """
     if not pid or pid <= 0:
         return False
@@ -2164,7 +2232,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return True
     except OSError:
         return False
-    # Still here → kill(0) succeeded. Check for zombie on Linux.
+    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
             with open(f"/proc/{int(pid)}/status", "r") as f:
@@ -2178,6 +2247,23 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             # PermissionError shouldn't happen for our own children but
             # be defensive.
+            pass
+    elif sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(int(pid))],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False
+            if "Z" in (proc.stdout or "").strip():
+                return False
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
 
