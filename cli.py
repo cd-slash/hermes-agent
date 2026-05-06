@@ -298,6 +298,7 @@ def load_cli_config() -> Dict[str, Any]:
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
+            "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
@@ -7131,7 +7132,20 @@ class HermesCLI:
                 if provider is not None:
                     print(f"🌐 Browser: {provider.provider_name()} (cloud)")
                 else:
-                    print("🌐 Browser: local headless Chromium (agent-browser)")
+                    # Show engine info for local mode
+                    try:
+                        from tools.browser_tool import _get_browser_engine
+                        engine = _get_browser_engine()
+                    except Exception:
+                        engine = "auto"
+                    if engine == "lightpanda":
+                        print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
+                        print("   ⚡ Lightpanda: faster navigation, no screenshot support")
+                        print("   Automatic Chrome fallback for screenshots and failed commands")
+                    elif engine == "chrome":
+                        print("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
+                    else:
+                        print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
             print("   /browser connect      — connect to your live Chrome")
             print("   /browser disconnect   — revert to default")
@@ -11862,8 +11876,22 @@ class HermesCLI:
             call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
             return from _wait_for_process.  ``time.sleep`` releases the
             GIL so the daemon actually runs during the window.
+
+            Guarded ``logger.debug``: CPython's ``logging`` module is not
+            reentrant-safe.  ``Logger.isEnabledFor`` caches level results
+            in ``Logger._cache``; under shutdown races the cache can be
+            cleared (``_clear_cache``) or mid-mutation when the signal
+            fires, raising ``KeyError: <level_int>`` (e.g. ``KeyError: 10``
+            for DEBUG) inside the handler.  That KeyError then escapes
+            before ``raise KeyboardInterrupt()`` can fire, which bypasses
+            prompt_toolkit's normal interrupt unwind and surfaces as the
+            EIO cascade from issue #13710.  Wrap the log in a bare
+            ``try/except`` so the handler can never raise through it.
             """
-            logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            try:
+                logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            except Exception:
+                pass  # never let logging raise from a signal handler (#13710 regression)
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
