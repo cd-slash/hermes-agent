@@ -1075,6 +1075,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
+        openrouter_min_coding_score: Optional[float] = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
@@ -1137,6 +1138,9 @@ class AIAgent:
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
+            openrouter_min_coding_score (float): Coding-score floor (0.0-1.0) for the
+                openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
+                None or empty = let OpenRouter pick the strongest available coder.
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
@@ -1356,6 +1360,7 @@ class AIAgent:
         self.provider_sort = provider_sort
         self.provider_require_parameters = provider_require_parameters
         self.provider_data_collection = provider_data_collection
+        self.openrouter_min_coding_score = openrouter_min_coding_score
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -2395,6 +2400,25 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+
+    def _get_session_db_for_recall(self):
+        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
+
+        Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
+        is important enough that a missing constructor argument should degrade by
+        opening the default state DB instead of making the advertised
+        ``session_search`` tool unusable.
+        """
+        if self._session_db is not None:
+            return self._session_db
+        try:
+            from hermes_state import SessionDB
+
+            self._session_db = SessionDB()
+            return self._session_db
+        except Exception as exc:
+            logger.debug("SessionDB unavailable for recall", exc_info=True)
+            return None
 
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
@@ -9010,6 +9034,7 @@ class AIAgent:
                 ollama_num_ctx=self._ollama_num_ctx,
                 # Context forwarded to profile hooks:
                 provider_preferences=_prefs or None,
+                openrouter_min_coding_score=self.openrouter_min_coding_score,
                 anthropic_max_output=_ant_max,
                 supports_reasoning=self._supports_reasoning_extra_body(),
                 qwen_session_metadata=_qwen_meta,
@@ -9049,6 +9074,7 @@ class AIAgent:
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
+            openrouter_min_coding_score=self.openrouter_min_coding_score,
             qwen_prepare_fn=self._qwen_prepare_chat_messages if _is_qwen else None,
             qwen_prepare_inplace_fn=self._qwen_prepare_chat_messages_inplace if _is_qwen else None,
             qwen_session_metadata=_qwen_meta,
@@ -9920,7 +9946,8 @@ class AIAgent:
                 store=self._todo_store,
             )
         elif function_name == "session_search":
-            if not self._session_db:
+            session_db = self._get_session_db_for_recall()
+            if not session_db:
                 from hermes_state import format_session_db_unavailable
                 return json.dumps({"success": False, "error": format_session_db_unavailable()})
             from tools.session_search_tool import session_search as _session_search
@@ -9928,7 +9955,7 @@ class AIAgent:
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
-                db=self._session_db,
+                db=session_db,
                 current_session_id=self.session_id,
             )
         elif function_name == "memory":
@@ -10544,7 +10571,8 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
-                if not self._session_db:
+                session_db = self._get_session_db_for_recall()
+                if not session_db:
                     from hermes_state import format_session_db_unavailable
                     function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
                 else:
@@ -10553,7 +10581,7 @@ class AIAgent:
                         query=function_args.get("query", ""),
                         role_filter=function_args.get("role_filter"),
                         limit=function_args.get("limit", 3),
-                        db=self._session_db,
+                        db=session_db,
                         current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time
@@ -10952,6 +10980,27 @@ class AIAgent:
                     or self._is_openrouter_url()
                 ):
                     summary_extra_body["provider"] = provider_preferences
+
+                # Pareto Code router plugin — model-gated. Same shape as
+                # the main-loop emission so summary calls on
+                # openrouter/pareto-code respect the user's coding-score floor.
+                if (
+                    self.model == "openrouter/pareto-code"
+                    and (
+                        (self.provider or "").strip().lower() == "openrouter"
+                        or self._is_openrouter_url()
+                    )
+                    and self.openrouter_min_coding_score is not None
+                    and self.openrouter_min_coding_score != ""
+                ):
+                    try:
+                        _ps = float(self.openrouter_min_coding_score)
+                    except (TypeError, ValueError):
+                        _ps = None
+                    if _ps is not None and 0.0 <= _ps <= 1.0:
+                        summary_extra_body["plugins"] = [
+                            {"id": "pareto-router", "min_coding_score": _ps}
+                        ]
 
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
