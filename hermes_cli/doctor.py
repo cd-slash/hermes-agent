@@ -245,14 +245,30 @@ def _build_apikey_providers_list() -> list:
     }
     for _label, _canonical in _name_to_canonical.items():
         _known_canonical.add(_canonical)
+    # Providers that already have a dedicated health check above the generic
+    # API-key loop (with custom headers/auth). Skip their pluggable profiles
+    # here so the generic Bearer-auth loop doesn't run a duplicate, broken
+    # check (e.g. Anthropic native API requires x-api-key, not Bearer).
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
         from providers.base import ProviderProfile as _PP
+        try:
+            from hermes_cli.providers import normalize_provider as _normalize_provider
+        except Exception:  # pragma: no cover - normalization is best-effort
+            def _normalize_provider(_name: str) -> str:
+                return (_name or "").strip().lower()
         for _pp in list_providers():
             if not isinstance(_pp, _PP) or _pp.auth_type != "api_key" or not _pp.env_vars:
                 continue
             _label = _pp.display_name or _pp.name
             if _label in _known_names or _pp.name in _known_canonical:
+                continue
+            _candidates = {_normalize_provider(_pp.name)}
+            for _alias in (_pp.aliases or ()):
+                _candidates.add(_normalize_provider(_alias))
+            if _candidates & _dedicated_canonical:
                 continue
             # Separate API-key vars from base-URL override vars — the health-check
             # loop sends the first found value as Authorization: Bearer, so a URL
