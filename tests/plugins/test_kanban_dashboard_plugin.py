@@ -1785,3 +1785,97 @@ def test_dashboard_lane_head_preserves_assignee_casing():
         "Lane head must not visually uppercase profile names — see #21320 "
         "and the explanatory comment in the CSS rule."
     )
+
+
+# ---------------------------------------------------------------------------
+# Built-asset regressions for the dashboard's run-history rendering
+# (issue #19548 — completed-run metadata used to render as a large pale box
+# that read like a crash dump). The plugin ships built-only, so we lock in
+# the rendered shape with static assertions on dist/index.js + dist/style.css.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_dist_path(name: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    p = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / name
+    assert p.exists(), f"dashboard asset missing: {p}"
+    return p
+
+
+def test_run_metadata_pretty_printed_with_label():
+    """Run-history metadata is pretty-printed JSON inside a labeled sub-block."""
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Pretty-printed JSON (indent=2) so a writer task's changed_files +
+    # URLs blob doesn't render as one wall-of-text monoline.
+    assert "JSON.stringify(r.metadata, null, 2)" in js
+    # Explicit label so the panel reads as auxiliary detail, not a crash dump.
+    assert '"hermes-kanban-run-meta-label"' in js
+    assert '"Metadata"' in js
+    # Wrapped in the labelled meta block container.
+    assert '"hermes-kanban-run-meta-block"' in js
+
+
+def test_run_metadata_secondary_styling():
+    """Metadata block is capped, transparent, and visually secondary."""
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # The label class exists with muted-foreground treatment.
+    assert ".hermes-kanban-run-meta-label" in css
+    # Container styling: thin left rule, no opaque highlighted fill that
+    # could be mistaken for an error/warning panel.
+    assert ".hermes-kanban-run-meta-block" in css
+    block_start = css.index(".hermes-kanban-run-meta-block {")
+    block_decl = css[block_start : block_start + 400]
+    assert "background: transparent" in block_decl
+    assert "border-left" in block_decl
+    # Cap meta height so verbose JSON doesn't sprawl across the run row.
+    meta_start = css.index(".hermes-kanban-run-meta {")
+    meta_decl = css[meta_start : meta_start + 400]
+    assert "max-height" in meta_decl
+    assert "overflow: auto" in meta_decl
+    assert "color: var(--color-muted-foreground)" in meta_decl
+
+
+def test_run_metadata_uses_native_collapse():
+    """Metadata panel uses <details>/<summary> for zero-JS collapse.
+
+    Native <details> means the browser handles state — no event handlers,
+    no React-state coupling, accessible by default (keyboard navigable,
+    screen-reader announces the disclosure state). Default-open state is
+    decided per-render based on payload length.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    # Element must be <details> / <summary>, not plain <div>s.
+    assert 'h("details"' in js
+    assert 'h("summary"' in js
+    # The open prop is computed from json length (collapsed when verbose).
+    assert "open: !collapsed" in js or "open:!collapsed" in js
+    assert "json.length > 300" in js
+
+
+def test_run_metadata_skips_empty_object():
+    """Empty `{}` metadata renders nothing — no useless labeled block.
+
+    `r.metadata && {} && ...` would render a "Metadata" labeled block
+    containing just `{}`, which is visual noise. The render predicate now
+    also checks Object.keys(r.metadata).length > 0.
+    """
+    js = _dashboard_dist_path("index.js").read_text(encoding="utf-8")
+    assert "Object.keys(r.metadata).length > 0" in js
+
+
+def test_run_metadata_disclosure_indicator_styled():
+    """Native disclosure marker is hidden + replaced with a CSS-only chevron.
+
+    Browsers render an OS-specific arrow next to <summary> by default. For a
+    consistent look across OSes the hermes dashboard hides that marker and
+    renders a CSS ::before chevron that rotates on [open]. Pin it so a
+    future CSS rebuild can't silently lose it (which would put two markers
+    side-by-side on Firefox/WebKit).
+    """
+    css = _dashboard_dist_path("style.css").read_text(encoding="utf-8")
+    # Default markers suppressed.
+    assert "list-style: none" in css
+    assert "::-webkit-details-marker" in css
+    # CSS-only chevron present + animates on open state.
+    assert ".hermes-kanban-run-meta-block[open]" in css
+    assert "rotate(90deg)" in css
