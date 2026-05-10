@@ -163,6 +163,29 @@ class TestSessionResetPolicy:
         assert restored.notify is False
 
 
+class TestThreadResetPolicy:
+    def test_threads_default_to_no_auto_reset(self):
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=15)
+        )
+
+        policy = config.get_reset_policy(session_type="thread")
+
+        assert policy.mode == "none"
+        assert policy.idle_minutes == 15
+
+    def test_explicit_thread_override_wins(self):
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=15),
+            reset_by_type={"thread": SessionResetPolicy(mode="idle", idle_minutes=5)},
+        )
+
+        policy = config.get_reset_policy(session_type="thread")
+
+        assert policy.mode == "idle"
+        assert policy.idle_minutes == 5
+
+
 class TestStreamingConfig:
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = StreamingConfig.from_dict({"enabled": "false"})

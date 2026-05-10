@@ -103,6 +103,26 @@ class TestShouldResetReason:
         source = _make_source()
         assert store._should_reset(entry, source) is None
 
+    def test_thread_sessions_ignore_default_auto_reset(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=30),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now() - timedelta(hours=2),
+            updated_at=datetime.now() - timedelta(hours=1),
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread-1",
+            chat_type="thread",
+            thread_id="thread-1",
+            user_id="u1",
+        )
+        assert store._should_reset(entry, source) is None
+
 
 # ---------------------------------------------------------------------------
 # SessionEntry captures reason

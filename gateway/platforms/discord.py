@@ -3555,6 +3555,136 @@ class DiscordAdapter(BasePlatformAdapter):
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
 
+    def _has_active_session_for_thread(self, thread_id: str, user_id: str) -> bool:
+        """Return True when a Discord thread already has a reusable Hermes session.
+
+        Native thread history should be backfilled when Hermes is entering a
+        thread for the first time *or* when the existing mapping is about to be
+        auto-reset by session policy. In those cases, the persisted transcript
+        is not sufficient for the next turn, so callers should treat the thread
+        as lacking an active session and fetch the native thread context once.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store or not thread_id:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=str(thread_id),
+                chat_type="thread",
+                user_id=str(user_id) if user_id else None,
+                thread_id=str(thread_id),
+            )
+
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+
+            session_store._ensure_loaded()
+            entry = session_store._entries.get(session_key)
+            if entry is None:
+                return False
+
+            # Explicitly resumed/restart-pending sessions should keep using the
+            # persisted transcript without native thread backfill.
+            if getattr(entry, "resume_pending", False):
+                return True
+
+            # A suspended session is intentionally being wiped on next access
+            # (/stop / escalation). Preserve that fresh-start behavior.
+            if getattr(entry, "suspended", False):
+                return True
+
+            should_reset = getattr(session_store, "_should_reset", None)
+            if callable(should_reset) and should_reset(entry, source):
+                return False
+
+            return True
+        except Exception:
+            return False
+
+    async def _fetch_thread_context(
+        self,
+        thread: Any,
+        current_message: DiscordMessage,
+        *,
+        limit: int = 30,
+    ) -> str:
+        """Fetch recent prior messages from a Discord thread.
+
+        Called only when Hermes is entering a thread that does not yet have a
+        persisted session. The returned text is prepended to the triggering
+        user message so the model can see the native thread context once,
+        before the Hermes transcript takes over.
+        """
+        if thread is None or current_message is None:
+            return ""
+
+        history = getattr(thread, "history", None)
+        if history is None:
+            return ""
+
+        bot_user = getattr(getattr(self, "_client", None), "user", None)
+        bot_id = str(getattr(bot_user, "id", "") or "") if bot_user else ""
+        lines: list[str] = []
+
+        try:
+            async for msg in history(limit=limit, before=current_message, oldest_first=True):
+                msg_id = str(getattr(msg, "id", "") or "")
+                if msg_id and msg_id == str(getattr(current_message, "id", "") or ""):
+                    continue
+
+                author = getattr(msg, "author", None)
+                author_id = str(getattr(author, "id", "") or "")
+                if bot_id and getattr(author, "bot", False) and author_id == bot_id:
+                    # Exclude Hermes' own earlier replies; once the thread has
+                    # a session, that history comes from the transcript.
+                    continue
+
+                content = (getattr(msg, "content", None) or "").strip()
+                if bot_id:
+                    content = content.replace(f"<@{bot_id}>", "").replace(f"<@!{bot_id}>", "").strip()
+
+                attachments = getattr(msg, "attachments", None) or []
+                if not content and attachments:
+                    attachment_names = [
+                        getattr(att, "filename", None) or "attachment"
+                        for att in attachments
+                    ]
+                    content = f"[attachments: {', '.join(attachment_names)}]"
+
+                if not content:
+                    continue
+
+                display_name = (
+                    getattr(author, "display_name", None)
+                    or getattr(author, "name", None)
+                    or author_id
+                    or "unknown"
+                )
+                lines.append(f"{display_name}: {content}")
+
+            if not lines:
+                return ""
+
+            return (
+                "[Thread context — prior messages in this Discord thread "
+                "(not yet in conversation history):]\n"
+                + "\n".join(lines)
+                + "\n[End of thread context]"
+            )
+        except Exception as e:
+            logger.warning("[%s] Failed to fetch Discord thread context: %s", self.name, e)
+            return ""
+
     async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
         """Return the interaction channel, fetching it if the payload is partial."""
         channel = getattr(interaction, "channel", None)
@@ -4052,6 +4182,7 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id = None
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
+        received_in_thread = is_thread
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
@@ -4277,15 +4408,34 @@ class DiscordAdapter(BasePlatformAdapter):
                                 att.filename, e, exc_info=True,
                             )
 
+        thread_context = ""
+        if (
+            received_in_thread
+            and thread_id
+            and msg_type != MessageType.COMMAND
+            and not self._has_active_session_for_thread(thread_id, str(message.author.id))
+        ):
+            thread_context = await self._fetch_thread_context(message.channel, message)
+
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.
-        event_text = normalized_content
+        event_text_parts = []
+        if thread_context:
+            event_text_parts.append(thread_context)
         if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+            event_text_parts.append(pending_text_injection)
+        if normalized_content:
+            event_text_parts.append(normalized_content)
+        event_text = "\n\n".join(part for part in event_text_parts if part and part.strip())
 
         # Defense-in-depth: prevent empty user messages from entering session
-        # (can happen when user sends @mention-only with no other text)
-        if not event_text or not event_text.strip():
+        # (can happen when user sends @mention-only with no other text).
+        # Preserve the native thread backfill above, but still include an
+        # explicit placeholder for the current turn when the user sent no text.
+        if not pending_text_injection and not normalized_content.strip():
+            placeholder = "(The user sent a message with no text content)"
+            event_text = f"{thread_context}\n\n{placeholder}" if thread_context else placeholder
+        elif not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel

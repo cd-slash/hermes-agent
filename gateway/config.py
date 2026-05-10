@@ -504,8 +504,15 @@ class GatewayConfig:
     ) -> SessionResetPolicy:
         """
         Get the appropriate reset policy for a session.
-        
-        Priority: platform override > type override > default
+
+        Priority: platform override > type override > default.
+
+        Threaded conversations are special: unless the operator explicitly
+        configures a thread-specific or platform-specific reset policy, thread
+        sessions default to ``mode='none'``. A thread is already the natural
+        conversation boundary on Discord/Slack/Telegram forums/etc., so users
+        expect returning to the same thread to restore the same Hermes context
+        automatically.
         """
         # Platform-specific override takes precedence
         if platform and platform in self.reset_by_platform:
@@ -514,6 +521,17 @@ class GatewayConfig:
         # Type-specific override (dm, group, thread)
         if session_type and session_type in self.reset_by_type:
             return self.reset_by_type[session_type]
+
+        # Default thread behavior: keep thread sessions attached to the thread
+        # indefinitely unless an explicit override says otherwise.
+        if session_type == "thread":
+            return SessionResetPolicy(
+                mode="none",
+                at_hour=self.default_reset_policy.at_hour,
+                idle_minutes=self.default_reset_policy.idle_minutes,
+                notify=self.default_reset_policy.notify,
+                notify_exclude_platforms=self.default_reset_policy.notify_exclude_platforms,
+            )
         
         return self.default_reset_policy
     
