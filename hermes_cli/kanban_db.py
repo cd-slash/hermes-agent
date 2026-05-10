@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from toolsets import get_toolset_names
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -90,6 +92,7 @@ from typing import Any, Iterable, Optional
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -1272,6 +1275,12 @@ def create_task(
     if skills is not None:
         cleaned: list[str] = []
         seen: set[str] = set()
+        # Collect all toolset-name confusions up front so the user sees the
+        # whole list at once. Raising on the first hit is friendly when the
+        # input has one mistake, but agents that confuse skills with toolsets
+        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
+        # and serial-correcting one per failure round-trips wastes tokens.
+        toolset_typos: list[str] = []
         for s in skills:
             if not s:
                 continue
@@ -1283,10 +1292,23 @@ def create_task(
                     f"skill name cannot contain comma: {name!r} "
                     f"(pass a list of separate names instead of a comma-joined string)"
                 )
+            if name.casefold() in KNOWN_TOOLSET_NAMES:
+                toolset_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if toolset_typos:
+            quoted = ", ".join(repr(n) for n in toolset_typos)
+            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). "
+                "Put toolsets in the assignee profile's `toolsets:` config "
+                "instead of per-task skills. Skills are named skill bundles "
+                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+                "capabilities (e.g. `web`, `browser`, `terminal`)."
+            )
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a
