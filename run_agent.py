@@ -2061,7 +2061,7 @@ class AIAgent:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
-                if _mem_provider_name:
+                if _mem_provider_name and _mem_provider_name.strip():
                     from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
@@ -10033,6 +10033,11 @@ class AIAgent:
             if _ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None
 
+            # Strip image parts for non-vision models that have provider profiles
+            # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
+            # registered providers with profiles were bypassing the strip.
+            api_messages = self._prepare_messages_for_non_vision_model(api_messages)
+
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,
@@ -10437,12 +10442,16 @@ class AIAgent:
         Kimi ``/coding`` and Moonshot thinking mode both require
         ``reasoning_content`` on every assistant tool-call message; omitting
         it causes the next replay to fail with HTTP 400.
+
+        Also detects Kimi models served through third-party providers (e.g.
+        ollama-cloud) by matching ``kimi`` in the model name.
         """
         return (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or "kimi" in (self.model or "").lower()
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:
