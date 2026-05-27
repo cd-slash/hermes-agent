@@ -197,6 +197,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "openai-api": ProviderConfig(
+        id="openai-api",
+        name="OpenAI API",
+        auth_type="api_key",
+        inference_base_url="https://api.openai.com/v1",
+        api_key_env_vars=("OPENAI_API_KEY",),
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
         name="xAI Grok OAuth (SuperGrok / Premium+)",
@@ -394,6 +402,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # OpenCode Go mixes API surfaces by model:
         # - GLM / Kimi use OpenAI-compatible chat completions under /v1
         # - MiniMax models use Anthropic Messages under /v1/messages
+        # - Qwen 3.7 uses Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),

@@ -248,6 +248,7 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    replay_encrypted_reasoning: bool = True,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -261,6 +262,14 @@ def _chat_messages_to_responses_input(
     integration).  We now replay encrypted reasoning on every Responses
     transport (xAI, native Codex, custom relays) and let xAI tell us
     explicitly if a specific surface ever rejects a payload.
+
+    ``replay_encrypted_reasoning`` is the per-session kill switch.  Some
+    OpenAI-compatible relays accept the request but later reject the
+    replayed encrypted blob with HTTP 400 ``invalid_encrypted_content``;
+    when that happens the retry loop calls
+    ``AIAgent._disable_codex_reasoning_replay`` which both strips cached
+    items from the conversation history and threads ``replay_enabled=False``
+    through this converter so subsequent turns send no reasoning items.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -290,7 +299,11 @@ def _chat_messages_to_responses_input(
                 # This applies to every Responses transport including
                 # xAI — see _chat_messages_to_responses_input docstring
                 # for the May 2026 reversal of the earlier xAI gate.
-                codex_reasoning = msg.get("codex_reasoning_items")
+                codex_reasoning = (
+                    msg.get("codex_reasoning_items")
+                    if replay_encrypted_reasoning
+                    else None
+                )
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
@@ -745,7 +758,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body",
+        "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -771,6 +784,13 @@ def _preflight_codex_api_kwargs(
     max_output_tokens = api_kwargs.get("max_output_tokens")
     if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
         normalized["max_output_tokens"] = int(max_output_tokens)
+    timeout = api_kwargs.get("timeout")
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and 0 < float(timeout) < float("inf")
+    ):
+        normalized["timeout"] = float(timeout)
     temperature = api_kwargs.get("temperature")
     if isinstance(temperature, (int, float)):
         normalized["temperature"] = float(temperature)
