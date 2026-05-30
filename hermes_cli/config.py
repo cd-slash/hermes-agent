@@ -1456,6 +1456,12 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        "mem0": {
+            "host": "",
+            "user_id": "hermes-user",
+            "agent_id": "hermes",
+            "rerank": True,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
