@@ -311,15 +311,28 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 hermes memory setup    # select "mem0"
 # Or manually:
 hermes config set memory.provider mem0
-echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
+echo "MEM0_API_KEY=your-key" >> "$HERMES_HOME/.env"
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+For proxy or self-hosted deployments, set the Mem0 host in `config.yaml`:
+
+```yaml
+memory:
+  provider: mem0
+  mem0:
+    host: https://mem0.example.com
+```
+
+**Config:** `$HERMES_HOME/config.yaml`
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `host` | `""` | Optional Mem0 API host override |
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+| `rerank` | `true` | Enable reranking for recall |
+
+`MEM0_API_KEY` stays in `$HERMES_HOME/.env`. If a legacy `$HERMES_HOME/mem0.json` exists with a `host` value, Hermes still honors that host as a read-only fallback override.
 
 ---
 

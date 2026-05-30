@@ -5,12 +5,13 @@ automatic deduplication via the Mem0 Platform API.
 
 Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
-Config via environment variables:
+Config via Hermes config + environment variables:
   MEM0_API_KEY       — Mem0 Platform API key (required)
-  MEM0_USER_ID       — User identifier (default: hermes-user)
-  MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
-Or via $HERMES_HOME/mem0.json.
+Non-secret settings come from config.yaml under memory.mem0. Legacy
+$HERMES_HOME/mem0.json is only consulted as a read-only fallback for host.
+MEM0_USER_ID and MEM0_AGENT_ID are still honored as backward-compatible
+fallbacks when memory.mem0.user_id / agent_id are unset.
 """
 
 from __future__ import annotations
@@ -38,28 +39,46 @@ _BREAKER_COOLDOWN_SECS = 120
 # ---------------------------------------------------------------------------
 
 def _load_config() -> dict:
-    """Load config from env vars, with $HERMES_HOME/mem0.json overrides.
+    """Load Mem0 config from config.yaml, env, and legacy mem0.json.
 
-    Environment variables provide defaults; mem0.json (if present) overrides
-    individual keys.  This avoids a silent failure when the JSON file exists
-    but is missing fields like ``api_key`` that the user set in ``.env``.
+    Secrets stay in env. Non-secret settings come from config.yaml under
+    ``memory.mem0``. A legacy ``$HERMES_HOME/mem0.json`` file is read only
+    for a fallback ``host`` override when present.
     """
+    from hermes_cli.config import load_config
     from hermes_constants import get_hermes_home
+
+    hermes_config = load_config()
+    provider_config = hermes_config.get("memory", {}).get("mem0", {})
+    if not isinstance(provider_config, dict):
+        provider_config = {}
+
+    rerank = provider_config.get("rerank", True)
+    if isinstance(rerank, str):
+        normalized = rerank.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            rerank = True
+        elif normalized in {"false", "0", "no", "off"}:
+            rerank = False
+        else:
+            rerank = True
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
-        "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
-        "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
-        "rerank": True,
+        "host": str(provider_config.get("host", "") or "").strip(),
+        "user_id": provider_config.get("user_id") or os.environ.get("MEM0_USER_ID", "hermes-user"),
+        "agent_id": provider_config.get("agent_id") or os.environ.get("MEM0_AGENT_ID", "hermes"),
+        "rerank": rerank,
         "keyword_search": False,
     }
 
     config_path = get_hermes_home() / "mem0.json"
-    if config_path.exists():
+    if config_path.exists() and not config["host"]:
         try:
             file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items()
-                           if v is not None and v != ""})
+            host = file_cfg.get("host")
+            if host:
+                config["host"] = host
         except Exception:
             pass
 
@@ -124,6 +143,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._host = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -144,23 +164,37 @@ class Mem0MemoryProvider(MemoryProvider):
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
-        """Write config to $HERMES_HOME/mem0.json."""
-        import json
-        from pathlib import Path
-        config_path = Path(hermes_home) / "mem0.json"
-        existing = {}
-        if config_path.exists():
-            try:
-                existing = json.loads(config_path.read_text())
-            except Exception:
-                pass
-        existing.update(values)
-        from utils import atomic_json_write
-        atomic_json_write(config_path, existing, mode=0o600)
+        """Persist provider config in config.yaml, not legacy mem0.json."""
+        from hermes_cli.config import load_config, save_config as save_hermes_config
+
+        previous_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            os.environ["HERMES_HOME"] = str(hermes_home)
+
+        try:
+            config = load_config()
+            memory_config = config.get("memory")
+            if not isinstance(memory_config, dict):
+                memory_config = {}
+                config["memory"] = memory_config
+
+            existing = memory_config.get("mem0")
+            if not isinstance(existing, dict):
+                existing = {}
+
+            existing.update(values)
+            memory_config["mem0"] = existing
+            save_hermes_config(config)
+        finally:
+            if previous_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = previous_home
 
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Mem0 Platform API host override"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -172,8 +206,13 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._client is not None:
                 return self._client
             try:
-                from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                import mem0 as mem0_module
+
+                client_kwargs = {"api_key": self._api_key}
+                if self._host:
+                    client_kwargs["host"] = self._host
+                memory_client_cls = getattr(mem0_module, "MemoryClient")
+                self._client = memory_client_cls(**client_kwargs)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")
@@ -204,6 +243,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
