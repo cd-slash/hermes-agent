@@ -7933,39 +7933,6 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    # Build a set of PIDs to exclude: the Python process itself plus its
-    # entire parent chain. On Windows the setuptools-generated hermes.exe
-    # launcher is a separate native process that spawns python.exe (the
-    # interpreter that runs our code).  os.getpid() returns the Python PID,
-    # but the launcher (which holds the file lock) is the parent.  Without
-    # walking the parent chain, every ``hermes update`` reports its own
-    # launcher as a concurrent instance — a false positive.
-    if exclude_pid is not None:
-        exclude_pids: set[int] = {exclude_pid}
-    else:
-        exclude_pids = {os.getpid()}
-    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
-    # AccessDenied) we stop walking and use whatever we've collected so far.
-    # Broader Exception catch on the outer block guards against partially-
-    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
-    # NoSuchProcess) — the surrounding update flow documents this helper as
-    # "never raises".
-    try:
-        current = psutil.Process(next(iter(exclude_pids)))
-        while True:
-            try:
-                parent = current.parent()
-            except Exception:
-                break
-            if parent is None or parent.pid <= 0:
-                break
-            if parent.pid in exclude_pids:
-                break  # loop detected
-            exclude_pids.add(parent.pid)
-            current = parent
-    except Exception:
-        pass
-
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
     for shim in _hermes_exe_shims(scripts_dir):
@@ -7975,6 +7942,56 @@ def _detect_concurrent_hermes_instances(
             shim_paths.add(str(shim).lower())
     if not shim_paths:
         return []
+
+    # Build a set of PIDs to exclude: the Python process itself plus every
+    # ancestor whose executable is one of our shims. On Windows the
+    # setuptools-generated hermes.exe launcher is a separate native process
+    # that spawns python.exe (the interpreter that runs our code).
+    # os.getpid() returns the Python PID, but the launcher (which holds the
+    # file lock) is the parent. Without excluding it, every ``hermes update``
+    # reports its own launcher as a concurrent instance — a false positive
+    # (issues #29341, #34795).
+    #
+    # Two robustness points learned from the field:
+    #   1. Use ``proc.parents()`` — it returns the WHOLE ancestor list in one
+    #      call. The earlier per-hop ``current.parent()`` loop bailed on the
+    #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
+    #      across session/elevation boundaries), leaving the launcher shim in
+    #      the candidate set and re-triggering the false positive.
+    #   2. Only exclude ancestors whose exe is itself a shim. A genuine second
+    #      hermes.exe sitting *under* a non-Hermes parent (e.g. a Hermes
+    #      Desktop backend child) must still be flagged, so we don't blanket-
+    #      exclude unrelated ancestors like the shell or terminal.
+    # Broad ``except Exception`` guards against partially-stubbed psutil in
+    # unit tests; this helper is documented as "never raises".
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {int(exclude_pid)}
+    else:
+        exclude_pids = {os.getpid()}
+    try:
+        seed = next(iter(exclude_pids))
+        try:
+            ancestors = psutil.Process(seed).parents()
+        except Exception:
+            ancestors = []
+        for ancestor in ancestors:
+            try:
+                anc_exe = ancestor.exe()
+            except Exception:
+                continue
+            if not anc_exe:
+                continue
+            try:
+                anc_norm = str(Path(anc_exe).resolve()).lower()
+            except (OSError, ValueError):
+                anc_norm = str(anc_exe).lower()
+            if anc_norm in shim_paths:
+                try:
+                    exclude_pids.add(int(ancestor.pid))
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     matches: list[tuple[int, str]] = []
     try:
@@ -8016,6 +8033,13 @@ def _format_concurrent_instances_message(
     lines.append("")
     lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
     lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
+    lines.append("")
+    if matches:
+        pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
+        lines.append("  If you've already closed everything and these PIDs are")
+        lines.append("  stale, terminate them directly, then retry the update:")
+        lines.append(f"      taskkill {pid_args} /F")
+        lines.append("")
     lines.append("  Override with `hermes update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)
@@ -9533,16 +9557,61 @@ def _cmd_update_impl(args, gateway_mode: bool):
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
 
-        needs_migration = missing_env or missing_config or current_ver < latest_ver
+        has_new_options = bool(missing_env or missing_config)
+        version_bump_only = (
+            not has_new_options and current_ver < latest_ver
+        )
+        needs_migration = has_new_options or current_ver < latest_ver
 
-        if needs_migration:
+        if version_bump_only:
+            # Nothing for the user to fill in — only the config format version
+            # changed (new defaults already merge in transparently). Asking
+            # "configure new options now?" here is misleading: saying yes just
+            # bumps the version and looks like a no-op (issue: ScottFive /
+            # Tt2021). Apply it silently and say what actually happened.
             print()
+            print(
+                f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
+            )
+            try:
+                migrate_config(interactive=False, quiet=True)
+                print("  ✓ Config format updated (no new settings to configure)")
+            except Exception as _mig_err:
+                print(f"  ⚠️  Config format update failed: {_mig_err}")
+                print("     Run 'hermes config migrate' to retry.")
+        elif needs_migration:
+            print()
+            # Show WHAT changed, not just a count, so the user can make an
+            # informed yes/no decision (previously the prompt named nothing).
+            def _print_items(items, label, key, fallback_key=None):
+                if not items:
+                    return
+                print(f"  {label}:")
+                shown = items[:8]
+                for it in shown:
+                    if isinstance(it, dict):
+                        name = it.get(key) or (fallback_key and it.get(fallback_key)) or "?"
+                        desc = (it.get("description") or "").strip()
+                    else:
+                        # Defensive: some callers/mocks pass bare name strings.
+                        name = str(it)
+                        desc = ""
+                    if desc:
+                        print(f"      • {name} — {desc}")
+                    else:
+                        print(f"      • {name}")
+                extra = len(items) - len(shown)
+                if extra > 0:
+                    print(f"      … and {extra} more")
+
             if missing_env:
                 print(
                     f"  ⚠️  {len(missing_env)} new required setting(s) need configuration"
                 )
+                _print_items(missing_env, "New settings", "name")
             if missing_config:
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+                _print_items(missing_config, "New options", "key")
 
             print()
             if assume_yes:
@@ -11094,6 +11163,13 @@ def cmd_completion(args, parser=None):
         print(generate_bash(parser))
 
 
+def cmd_prompt_size(args):
+    """Show a byte/char breakdown of the system prompt + tool schemas."""
+    from hermes_cli.prompt_size import cmd_prompt_size as _impl
+
+    _impl(args)
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -11130,6 +11206,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
@@ -11230,6 +11307,26 @@ _AGENT_SUBCOMMANDS = {
 }
 
 
+def _is_tui_chat_launch(args) -> bool:
+    return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+
+
+def _command_has_dedicated_mcp_startup(args) -> bool:
+    if args.command == "acp":
+        return True
+    if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
+        return True
+    if args.command == "cron" and getattr(args, "cron_command", None) in {"run", "tick"}:
+        return True
+    return False
+
+
+def _should_background_mcp_startup(args) -> bool:
+    if _is_tui_chat_launch(args):
+        return False
+    return args.command in {None, "chat", "rl"}
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -11249,19 +11346,42 @@ def _prepare_agent_startup(args) -> None:
             "plugin discovery failed at CLI startup",
             exc_info=True,
         )
-    try:
-        # MCP tool discovery — no event loop running in CLI/TUI startup,
-        # so inline is safe.  Moved here from model_tools.py module scope
-        # to avoid freezing the gateway's event loop on its first message
-        # via the same lazy import path (#16856).
-        from tools.mcp_tool import discover_mcp_tools
+    _run_inline_mcp_discovery = True
+    if _is_tui_chat_launch(args):
+        # The TUI launcher hands off to a dedicated startup path that already
+        # backgrounds MCP discovery with a bounded join before the first tool
+        # snapshot.
+        _run_inline_mcp_discovery = False
+    elif _command_has_dedicated_mcp_startup(args):
+        # These entrypoints already do their own MCP startup later on the real
+        # runtime path (gateway executor, ACP launcher, cron job runner).
+        _run_inline_mcp_discovery = False
+    elif _should_background_mcp_startup(args):
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        discover_mcp_tools()
-    except Exception:
-        logger.debug(
-            "MCP tool discovery failed at CLI startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="cli-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at CLI startup",
+                exc_info=True,
+            )
+        _run_inline_mcp_discovery = False
+    if _run_inline_mcp_discovery:
+        try:
+            # MCP tool discovery remains synchronous for entrypoints that do
+            # not own a later bounded/executor startup path.
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()
+        except Exception:
+            logger.debug(
+                "MCP tool discovery failed at CLI startup",
+                exc_info=True,
+            )
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
@@ -14362,6 +14482,30 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    # =========================================================================
+    # prompt-size command
+    # =========================================================================
+    prompt_size_parser = subparsers.add_parser(
+        "prompt-size",
+        help="Show a byte breakdown of the system prompt + tool schemas",
+        description=(
+            "Report the fixed prompt budget for a fresh session: system "
+            "prompt total, skills index, memory, user profile, and tool-schema "
+            "JSON. Runs offline (no API call)."
+        ),
+    )
+    prompt_size_parser.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
+    )
+    prompt_size_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the breakdown as JSON",
+    )
+    prompt_size_parser.set_defaults(func=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute
